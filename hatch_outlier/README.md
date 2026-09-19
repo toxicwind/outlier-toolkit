@@ -32,6 +32,12 @@ exit 2 means not authenticated (re-run steps 1-2).
 
 ## Watch cron
 
-`cron.d/outlier-queue-watch` (platform scheduler, every 30 min) runs `check`,
-diffs against `last_check.json`, and surfaces only genuine changes (new tasks,
-queue newly non-empty, auth expiry). One mechanism, no duplicates.
+`outlier-mail-watch` (platform scheduler, every 30 min) is the single watch
+mechanism, no duplicates:
+
+1. Gmail `from:outlier.ai` since last check, diffed against seen-state in
+   `.state/gmail_seen.json` — surfaces only NEW emails (mission deadlines,
+   screening steps, task availability). Delivers to main chat.
+2. If `~/.local/share/outlier-watch/cookies.json` exists, also runs
+   `watch.py check` and reports task_count / queue changes vs
+   `.state/last_check.json`. Skipped silently until auth lands.
