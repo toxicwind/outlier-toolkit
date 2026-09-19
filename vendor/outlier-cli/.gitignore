@@ -1,0 +1,107 @@
+scripts/*.log
+*.bak
+*.bak/
+*conflicted copy*
+
+.env.*
+authentication_profiles/
+.auth-state.json
+auth-state.json
+session.json
+*_session.json
+storage-state.json
+cookies.json
+google/credentials.json
+google/token.json
+
+**/.playwright-cli/
+.chromium-profile/
+**/chromium-profile/
+.ruff_cache/
+
+.venv/
+.virtualenv/
+.env_dir/
+venv.bak/
+
+cache/
+MagicMock/
+agent_worktrees/
+_personal/*
+!_personal/microworker/
+bricklink/.playwright-recordings/
+
+# Skills for private CLI tools under _personal/
+_repo/skills/ata-blog*/
+_repo/skills/azlogs*/
+_repo/skills/n8n-cli-tool-node-converter*/
+_repo/skills/n8n-node*/
+_repo/skills/pluralsight-author*/
+_repo/skills/progress-servicenow*/
+
+# Agent worktrees (transient checkouts, never source)
+**/.claude/worktrees/
+
+# Local planning scratch (never source)
+
+facebook/data/
+gemini/gemini_cli/.usage.json
+globiflow/.storage/
+n8n/_temp/
+
+# .env*  -- NOT universal: root already has .env + .env.* + !.env.example; this re-ignored 98 tracked .env.example files
+.m365-token-cache.json
+# .mcp.json  -- NOT universal: hides shopgoodwill/.mcp.json and slack/.mcp.json, both committed config
+.profiles/
+.storage/
+.token-cache.json
+.usage.json
+credentials.json
+profiles/
+token.json
+
+# --- Python bytecode and compiled artifacts ---
+**/__pycache__/
+*.pyc
+*.tar.gz
+*.whl
+*/__pycache__/
+
+# --- Build, packaging, virtualenv, and coverage output ---
+*.egg
+*.egg-info
+.eggs/
+.installed.cfg
+.nox/
+.tox
+.virtualenv
+build
+develop-eggs/
+dist
+downloads/
+eggs/
+env
+env.bak/
+ENV/
+# lib/  -- NOT universal: hides _repo/_scripts/lib/log.sh, the shared script logger
+lib64/
+parts/
+sdist/
+var/
+vendor/
+
+# --- Node tooling output ---
+package-lock.json
+
+# --- Other per-tool scratch and output ---
+dbxcli
+docs/plans/
+idea
+# test.py  -- NOT universal: hides n8n/n8n_cli/commands/test.py, a real command module
+untitled
+
+# Never let any later rule hide the shape-only example env files.
+!**/.env.example
+
+# Fetched catalog PNGs (runtime artifacts of set-identification runs)
+cat_*.png
