@@ -1,0 +1,530 @@
+"""Output formatting helpers.
+
+Stream Usage:
+    stdout (fd 1) -> Data only (JSON, tables) - via print_json(), print_table()
+    stderr (fd 2) -> Messages only - via print_error(), print_warning(), print_success(), print_info()
+
+This separation enables clean piping: `<tool> list | jq '.field'`
+"""
+
+import json
+import os
+import sys
+from typing import Any, Dict, List, Optional, Sequence, Union
+
+from pydantic import BaseModel
+from rich.console import Console
+from rich.markup import escape
+from rich.table import Table
+from rich import box
+
+from .exceptions import ClientError, CredentialError
+
+
+def _stdout_is_interactive_tty() -> bool:
+    """Return True only when stdout is a real interactive terminal.
+
+    Color and terminal control sequences (including Rich's terminal
+    background/theme detection, which round-trips an OSC 11 response) must only
+    be emitted to an interactive terminal. When stdout is a pipe or file, or a
+    PTY-backed capture sets FORCE_COLOR / TTY_COMPATIBLE to fake a terminal, the
+    answer is still "not interactive" for our purposes: automation parses this
+    stream as data and any escape byte corrupts it.
+    """
+    isatty = getattr(sys.stdout, "isatty", None)
+    if isatty is None:
+        return False
+    try:
+        return bool(isatty())
+    except ValueError:
+        # isatty() can raise on a closed stream (e.g. at pytest teardown).
+        return False
+
+
+def _color_disabled_by_env() -> bool:
+    """Return True when the environment opts out of color.
+
+    Honors the https://no-color.org convention (any non-empty NO_COLOR) and the
+    conventional TERM=dumb signal for non-capable terminals.
+    """
+    if os.environ.get("NO_COLOR", "") != "":
+        return True
+    if os.environ.get("TERM", "").strip().lower() == "dumb":
+        return True
+    return False
+
+
+def _build_console() -> Console:
+    """Build the shared Rich console with deterministic color/escape gating.
+
+    stdout carries DATA. Color and any terminal control sequence are emitted
+    only when stdout is a genuine interactive TTY and the environment has not
+    opted out of color. Otherwise the console is forced into a plain,
+    no-color, non-terminal mode so it never writes ANSI styling or terminal
+    detection escapes into captured output. This is the single source of
+    color/escape policy for every CLI tool.
+    """
+    if _stdout_is_interactive_tty() and not _color_disabled_by_env():
+        return Console()
+    # force_terminal=False stops Rich from honoring FORCE_COLOR / TTY_COMPATIBLE
+    # and from running terminal background/theme detection; no_color=True
+    # guarantees no ANSI styling even if something downstream flips detection.
+    return Console(force_terminal=False, no_color=True)
+
+
+# Rich console for table output. Gated so non-TTY stdout never receives color
+# or terminal control/detection escape sequences.
+console = _build_console()
+
+
+def _supports_unicode() -> bool:
+    """Check if the current stdout encoding supports common Unicode symbols.
+
+    Returns False on Windows when the console uses a legacy encoding (e.g.
+    cp1252) that cannot represent characters like U+2713 (checkmark).
+    """
+    if os.name != "nt":
+        return True
+    encoding = getattr(sys.stdout, "encoding", None) or ""
+    return encoding.lower().replace("-", "") in ("utf8", "utf16")
+
+
+# ASCII-safe symbol alternatives for environments that lack Unicode support.
+_SYMBOLS_UNICODE = {"check": "\u2713", "cross": "\u2717", "warning": "\u26a0", "circle": "\u25cb"}
+_SYMBOLS_ASCII = {"check": "Yes", "cross": "No", "warning": "(!)", "circle": "-"}
+
+
+def safe_symbol(name: str) -> str:
+    """Return a display symbol that is safe for the current terminal encoding.
+
+    Supported names: ``check``, ``cross``, ``warning``, ``circle``.
+    """
+    symbols = _SYMBOLS_UNICODE if _supports_unicode() else _SYMBOLS_ASCII
+    return symbols.get(name, name)
+
+
+def _format_cell_value(value: Any) -> str:
+    """Format a cell value for table display.
+
+    Rich renders cell text with markup enabled, so bracketed data (file paths
+    like ``[/repo/client.py:1321]``, ``[link]`` tokens, log lines, JSON arrays)
+    would be parsed as Rich markup tags and crash rendering with
+    ``closing tag '...' doesn't match any open tag``. All data-derived strings
+    are escaped here with ``rich.markup.escape`` so brackets display literally.
+    The ``None`` and bool branches return static, bracket-free text and need no
+    escaping. This is the sole caller-facing formatter for table cells.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return safe_symbol("check") if value else safe_symbol("cross")
+    if isinstance(value, (dict, list)):
+        return escape(json.dumps(value, ensure_ascii=False))
+    return escape(str(value))
+
+
+def print_table(
+    data: Optional[Union[Sequence[Union[BaseModel, dict]], dict]],
+    columns: Optional[List[str]] = None,
+    headers: Optional[List[str]] = None,
+    title: Optional[str] = None,
+    max_columns: int = 6,
+):
+    """Print data as a Rich formatted table to stdout.
+
+    Handles Pydantic models, dicts, and lists of either.
+    Uses Rich tables with box-drawing characters for better visual output.
+    Limits display to max ``max_columns`` columns for readability.
+
+    Args:
+        data: Data to output as table (list of dicts/models or single dict/model).
+        columns: Optional list of column keys to display. If None, auto-discovers.
+        headers: Optional display headers (defaults to column names).
+        title: Optional table title.
+        max_columns: Maximum number of columns to display. Defaults to 6.
+            Pass 0 to disable the limit and show all columns.
+    """
+    if data is None:
+        console.print("[dim]No data[/dim]")
+        return
+
+    # Handle wrapped responses (e.g., {items: [...], total: N})
+    if isinstance(data, dict) and "items" in data and isinstance(data["items"], list):
+        data = data["items"]
+
+    # Convert single item to list
+    if isinstance(data, (dict, BaseModel)):
+        data = [data]
+
+    if not data:
+        console.print("[dim]No data[/dim]")
+        return
+
+    # Convert models to dicts (mode="json" serializes enums to values)
+    rows: List[Dict] = []
+    for item in data:
+        if isinstance(item, BaseModel):
+            rows.append(item.model_dump(mode="json"))
+        elif isinstance(item, dict):
+            rows.append(item)
+        else:
+            rows.append({"value": item})
+
+    if not rows:
+        console.print("[dim]No data[/dim]")
+        return
+
+    # Auto-discover columns if not provided
+    if columns is None:
+        all_keys: List[str] = []
+        for row in rows:
+            for key in row.keys():
+                if key not in all_keys:
+                    all_keys.append(key)
+        columns = all_keys
+
+    if not columns:
+        console.print("[dim]No data[/dim]")
+        return
+
+    # Limit columns for readability (max_columns=0 disables the limit)
+    if max_columns > 0 and len(columns) > max_columns:
+        columns = columns[:max_columns]
+
+    # Use column names as headers if not provided
+    if headers is None:
+        headers = columns
+    elif max_columns > 0 and len(headers) > max_columns:
+        headers = headers[:max_columns]
+
+    # Create Rich table with box-drawing characters
+    table = Table(
+        title=title,
+        show_header=True,
+        header_style="bold cyan",
+        box=box.HEAVY_HEAD,
+    )
+
+    # Add columns - allow wrapping for long values. Headers are often
+    # auto-derived from data keys, so escape them too: a bracketed key would
+    # otherwise be parsed as Rich markup. header_style (set on Table above) is
+    # applied separately and is unaffected by escaping the header text.
+    for header, col in zip(headers, columns):
+        table.add_column(escape(header), no_wrap=False)
+
+    # Add rows
+    for row in rows:
+        row_values = []
+        for col in columns:
+            value = row.get(col, "")
+            row_values.append(_format_cell_value(value))
+        table.add_row(*row_values)
+
+    console.print(table)
+
+
+def _sanitize_surrogates(s: str) -> str:
+    """Remove surrogate characters from a string.
+
+    Surrogate pairs (U+D800-U+DFFF) are invalid in isolation and cause
+    UnicodeEncodeError when printing to stdout. This encodes with
+    'surrogatepass' then decodes with 'replace' to substitute them.
+    """
+    return s.encode("utf-8", errors="surrogatepass").decode("utf-8", errors="replace")
+
+
+def _serialize_for_json(obj: Any) -> Any:
+    """Recursively serialize objects for JSON output, handling Pydantic models.
+
+    Also sanitizes strings to remove invalid surrogate characters that would
+    cause UnicodeEncodeError when printing.
+    """
+    if isinstance(obj, str):
+        return _sanitize_surrogates(obj)
+    elif isinstance(obj, BaseModel) or hasattr(obj, "model_dump"):
+        return _serialize_for_json(obj.model_dump())
+    elif hasattr(obj, "dict") and not isinstance(obj, dict):
+        return _serialize_for_json(obj.dict())
+    elif isinstance(obj, list):
+        return [_serialize_for_json(item) for item in obj]
+    elif isinstance(obj, dict):
+        return {_sanitize_surrogates(k) if isinstance(k, str) else k: _serialize_for_json(v) for k, v in obj.items()}
+    elif hasattr(obj, "value"):
+        return obj.value
+    return obj
+
+
+def print_json(data: Any, indent: int = 2, exclude_none: bool = False):
+    """Print data as JSON to stdout.
+
+    Handles Pydantic models (including nested), dicts, lists, and enums.
+
+    Args:
+        data: Data to print (model, dict, list of models/dicts).
+        indent: JSON indentation level.
+        exclude_none: If True, omit None values from output (top-level models only).
+    """
+    if isinstance(data, BaseModel) and exclude_none:
+        output = data.model_dump(exclude_none=True)
+    else:
+        output = _serialize_for_json(data)
+
+    # Consume cache state so a prior @cached call cannot affect later output.
+    from cli_tools_shared.data_cache import reset_cache_hit
+    reset_cache_hit()
+
+    json_str = json.dumps(output, indent=indent, ensure_ascii=False, default=str)
+    sys.stdout.buffer.write(json_str.encode("utf-8"))
+    sys.stdout.buffer.write(b"\n")
+    sys.stdout.buffer.flush()
+
+
+def print_ai_instruction(instruction: Any, indent: int = 2):
+    """Print an AI instruction result as JSON data on stdout."""
+    from cli_tools_shared.models import AIInstruction
+
+    if not isinstance(instruction, AIInstruction):
+        raise TypeError(f"Expected AIInstruction, got {type(instruction).__name__}")
+    print_json(instruction, indent=indent, exclude_none=True)
+
+
+def print_output(data: Any, table: bool = False, columns: List[str] = None, headers: List[str] = None, indent: int = 2):
+    """Print data in the specified format (JSON or table).
+
+    When table=True, auto-derives column headers from dict keys if not provided.
+
+    Args:
+        data: Data to output.
+        table: If True, output as table; otherwise as JSON.
+        columns: Optional list of column keys (auto-derived from data if None).
+        headers: Optional display headers (auto-derived as title-cased column names if None).
+        indent: JSON indentation level (only used for JSON output).
+    """
+    if table:
+        print_table(data, columns, headers)
+    else:
+        print_json(data, indent)
+
+
+def _stdin_is_interactive_tty() -> bool:
+    """Return True only when stdin is a real interactive terminal.
+
+    Destructive commands prompt for confirmation on stdin. When stdin is a pipe,
+    a closed stream, or otherwise not a terminal (e.g. an agent's Bash tool or a
+    CI runner), there is no way to answer the prompt: the read returns EOF and
+    click raises ``Abort``. Callers use this to fail fast with an actionable
+    message instead of blocking on an unanswerable prompt.
+    """
+    isatty = getattr(sys.stdin, "isatty", None)
+    if isatty is None:
+        return False
+    try:
+        return bool(isatty())
+    except ValueError:
+        # isatty() can raise on a closed stream (e.g. at pytest teardown).
+        return False
+
+
+def print_error(message: str):
+    """Print error message to stderr.
+
+    Never emits a bare ``Error:`` with no detail. Some exceptions carry an empty
+    ``str()`` (e.g. ``click.exceptions.Abort``); for those, fall back to a
+    generic, non-empty description so the user always sees what went wrong.
+    """
+    text = str(message).strip()
+    if not text:
+        text = "an unknown error occurred (the exception carried no message)"
+    print(f"Error: {text}", file=sys.stderr)
+
+
+def print_warning(message: str):
+    """Print warning message to stderr."""
+    print(f"Warning: {message}", file=sys.stderr)
+
+
+def print_success(message: str):
+    """Print success message to stderr."""
+    print(f"{safe_symbol('check')} {message}", file=sys.stderr)
+
+
+def print_info(message: str):
+    """Print informational message to stderr."""
+    print(message, file=sys.stderr)
+
+
+def command(fn):
+    """Decorator that wraps a Typer command with standard error handling.
+
+    Catches all exceptions except typer.Exit, passing others through handle_error.
+    """
+    import functools
+    import typer as _typer
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except _typer.Exit:
+            raise
+        except Exception as e:
+            raise _typer.Exit(handle_error(e))
+    return wrapper
+
+
+def handle_error(error: Exception) -> int:
+    """Handle errors and return appropriate exit code.
+
+    Returns:
+        2 for credential errors, 1 for all other errors.
+    """
+    print_error(str(error))
+    if isinstance(error, CredentialError):
+        return 2
+    return 1
+
+
+def confirm_destructive_action(
+    prompt: str,
+    *,
+    assume_yes: bool,
+    action_description: str,
+    skip_flag_hint: str = "--yes",
+) -> None:
+    """Gate a destructive action behind confirmation, safe for non-TTY contexts.
+
+    This is the single confirmation path for every destructive CLI command
+    (delete, clear, purge, etc.). It guarantees three things:
+
+    * ``assume_yes=True`` (the command's confirmation-skip flag was passed):
+      proceed with no prompt. Behavior is unchanged.
+    * stdin is an interactive terminal: prompt the user with ``typer.confirm``.
+      Declining cancels cleanly with exit code 0 (no error).
+    * stdin is NOT a terminal (agent Bash tool, pipe, CI) and ``assume_yes`` is
+      False: fail fast with a clear, actionable ``ClientError`` instead of
+      blocking on an unanswerable prompt and surfacing a bare ``Error:`` when
+      the prompt read hits EOF. The caller's ``handle_error`` turns this into a
+      non-zero exit with the message below.
+
+    Args:
+        prompt: The yes/no question shown to interactive users.
+        assume_yes: True when the command's confirmation-skip flag was supplied.
+        action_description: Short imperative describing the action for the
+            non-interactive refusal message, e.g. ``"delete record recXXX"`` or
+            ``"delete field fldXXX"``.
+        skip_flag_hint: The exact confirmation-skip flag the *calling command*
+            exposes, named in the non-interactive refusal message so the user
+            re-runs with the correct flag. Commands that use ``--force``/``-F``
+            (e.g. ``auth profiles delete``) must pass ``"--force"``; the default
+            ``"--yes"`` suits commands that expose ``--yes``/``-y``.
+
+    Raises:
+        ClientError: When confirmation is required but stdin is not a TTY.
+        typer.Exit: With code 0 when an interactive user declines.
+    """
+    import typer
+
+    if assume_yes:
+        return
+
+    if not _stdin_is_interactive_tty():
+        raise ClientError(
+            f"Refusing to {action_description} without confirmation. "
+            f"Re-run with {skip_flag_hint} in non-interactive contexts."
+        )
+
+    if not typer.confirm(prompt):
+        print_info("Cancelled")
+        raise typer.Exit(0)
+
+
+def prompt_secret(
+    label: str,
+    *,
+    allow_empty: bool = False,
+    non_interactive_message: Optional[str] = None,
+) -> str:
+    """Read a secret value with hidden input from an interactive terminal.
+
+    The single shared entry point for *reactive* secret prompts -- a secret a
+    command must request in the middle of a flow, at the moment it is needed
+    (e.g. a payment card CVV that a checkout page demands). CLIs must route such
+    prompts here instead of calling ``typer.prompt()`` / ``input()`` directly, so
+    prompting stays centralized and consistently TTY-gated. (Login credentials
+    belong on ``Config.CUSTOM_LOGIN_PROMPTS`` / ``AUTH_EXTRA_PROMPTS`` instead;
+    this helper is for non-login, in-flow secrets.)
+
+    Input is hidden (never echoed). When stdin is not an interactive terminal
+    (agent Bash tool, pipe, CI) the prompt is unanswerable, so this fails fast
+    with a clear ``ClientError`` instead of blocking on EOF. The caller decides
+    whether an in-flow secret is optional by gating the call on
+    ``_stdin_is_interactive_tty()`` first; a bare call treats the secret as
+    required.
+
+    Args:
+        label: The prompt text shown to the user.
+        allow_empty: When True, an empty response is accepted and returned as
+            ``""`` (e.g. an optional "press Enter to skip" secret). When False,
+            the user is re-prompted until a non-empty value is entered.
+        non_interactive_message: Optional override for the non-interactive
+            failure message.
+
+    Returns:
+        The entered secret, stripped of surrounding whitespace (``""`` only when
+        ``allow_empty`` and the user skips).
+
+    Raises:
+        ClientError: When stdin is not an interactive terminal.
+    """
+    import typer
+
+    if not _stdin_is_interactive_tty():
+        raise ClientError(
+            non_interactive_message
+            or f"{label}: a secret value is required but there is no interactive "
+            "terminal to read it. Re-run in an interactive terminal."
+        )
+    if allow_empty:
+        value = typer.prompt(label, default="", hide_input=True, show_default=False)
+    else:
+        value = typer.prompt(label, hide_input=True)
+    return (value or "").strip()
+
+
+def prompt_text(
+    label: str,
+    *,
+    default: Optional[str] = None,
+    non_interactive_message: Optional[str] = None,
+) -> str:
+    """Read a visible (non-secret) value from an interactive terminal.
+
+    Shared entry point for non-secret interactive prompts (e.g. naming a saved
+    item) so CLIs never call ``typer.prompt()`` / ``input()`` directly. TTY-gated
+    like :func:`prompt_secret`: fails fast when stdin is not interactive rather
+    than blocking on an unanswerable prompt.
+
+    Args:
+        label: The prompt text shown to the user.
+        default: Optional default returned when the user submits an empty
+            response. When None, the user is re-prompted until non-empty.
+        non_interactive_message: Optional override for the non-interactive
+            failure message.
+
+    Returns:
+        The entered text, stripped of surrounding whitespace.
+
+    Raises:
+        ClientError: When stdin is not an interactive terminal.
+    """
+    import typer
+
+    if not _stdin_is_interactive_tty():
+        raise ClientError(
+            non_interactive_message
+            or f"{label}: a value is required but there is no interactive terminal "
+            "to read it. Pass it as a command option/argument instead."
+        )
+    if default is not None:
+        return (typer.prompt(label, default=default) or "").strip()
+    return (typer.prompt(label) or "").strip()
