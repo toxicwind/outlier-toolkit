@@ -27,6 +27,7 @@ from hatch_outlier import (  # noqa: E402
     load_jar,
     peek_queue,
     request_magic_link,
+    save_jar,
     verify_token,
     LAST_PATH,
 )
@@ -42,6 +43,7 @@ def cmd_auth_request(email: str) -> int:
     jar = load_jar()
     try:
         resp = request_magic_link(jar, email)
+        save_jar(jar)  # persist pre-auth cookies (_csrf, etc.) for auth-verify
     except OutlierError as e:
         print(json.dumps({"ok": False, "error": str(e)}))
         return 1
@@ -64,11 +66,8 @@ def cmd_auth_verify(url: str) -> int:
 
 def cmd_check() -> int:
     jar = load_jar()
-    if not authenticated(jar):
-        print(json.dumps({"ok": False, "authenticated": False}))
-        return 2
     try:
-        raw = peek_queue(jar)
+        raw = peek_queue(jar)  # single shot: 401/auth errors raise OutlierError
     except OutlierError as e:
         print(json.dumps({"ok": False, "authenticated": False, "error": str(e)}))
         return 2
@@ -85,6 +84,9 @@ def cmd_check() -> int:
         "tasks": tasks,
         "task_count": len(tasks),
     }
+    os.makedirs(os.path.dirname(LAST_PATH), exist_ok=True)
+    with open(LAST_PATH, "w") as f:
+        json.dump(out, f, indent=2, default=str)
     print(json.dumps(out, default=str))
     return 0
 
