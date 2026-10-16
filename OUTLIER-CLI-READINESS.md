@@ -7,7 +7,7 @@ Prepared by lane-1 (visible contributor) 2026-09-19 ~04:05 MDT. Lane-2 is the ac
 
 - CLI: `outlier` via `uv tool install`, on PATH at `~/.local/bin/outlier` (awrawr-pc)
 - Version: `outlier-cli version 0.1.0`
-- Source: `/home/toxic/sovereign/projects/outlier-toolkit/vendor/outlier-cli/outlier` (vendored, MIT)
+- Source: `/home/toxic/estate-scripts/projects/outlier-toolkit/vendor/outlier-cli/outlier` (vendored, MIT)
 - Missing framework dep `_repo/cli-tools-shared` was fetched from the **pinned upstream commit** `e451ffae94590877fd014b00480688ab6b9181fa` (adbertram/cli-tools, matches VENDOR.md) and placed at `vendor/outlier-cli/_repo/cli-tools-shared`.
 
 ## Verified commands (all run on awrawr-pc 2026-09-19)
