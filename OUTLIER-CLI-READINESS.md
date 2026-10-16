@@ -19,14 +19,14 @@ outlier auth status          # JSON: authenticated=false, "Not authenticated. Ru
 outlier auth login --help    # works
 ```
 
-## Exact remaining user-only steps (Chris — nothing else blocks)
+## Exact remaining user-only steps (the Architect — nothing else blocks)
 
 Outlier has **no password**. Auth is a passwordless emailed one-time link → persisted browser session cookie (`_jwt` on `.outlier.ai`). The CLI consumes it headlessly via the repo-owned `google` CLI reading Gmail, so the **Gmail mailbox must be accessible to the `google` CLI** (`google auth status` must pass for that mailbox).
 
 1. Set the account email once:
    ```bash
    mkdir -p ~/.local/share/cli-tools/outlier
-   echo 'ACCOUNT_EMAIL=<Chris's Outlier account email>' >> ~/.local/share/cli-tools/outlier/.env
+   echo 'ACCOUNT_EMAIL=<the Architect's Outlier account email>' >> ~/.local/share/cli-tools/outlier/.env
    ```
 2. Log in (fully non-interactive; mails a fresh link and consumes it from Gmail):
    ```bash
@@ -45,11 +45,11 @@ Outlier has **no password**. Auth is a passwordless emailed one-time link → pe
 
 ## Hard stops — deliberately NOT done
 
-- Did not set `ACCOUNT_EMAIL` (Chris's account email was not confirmed; reading Gmail to find it was out of scope).
-- Did not run `outlier auth login` (it mails a fresh sign-in link and reads Gmail — Chris's interactive/email surface).
+- Did not set `ACCOUNT_EMAIL` (the Architect's account email was not confirmed; reading Gmail to find it was out of scope).
+- Did not run `outlier auth login` (it mails a fresh sign-in link and reads Gmail — the Architect's interactive/email surface).
 - Did not touch Gmail, did not click/complete any screening step, did not create an account.
 - `/home/toxic/.local/share/outlier-watch/cookies.json` (empty `[]`, created 03:52 MDT) was observed read-only and left untouched — appears to be lane-2's in-progress auth setup.
 
 ## Post-login
 
-Once `outlier auth test` passes, the Aether mission claim + Live S2S screening remain Chris's interactive steps; the 14:00 MDT reminder cron still fires to confirm completion.
+Once `outlier auth test` passes, the Aether mission claim + Live S2S screening remain the Architect's interactive steps; the 14:00 MDT reminder cron still fires to confirm completion.
