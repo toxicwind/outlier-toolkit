@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# outlier-toolkit — primary operation: queue/task watcher for the Outlier account.
+# Entry: watch.py (auth-request / auth-verify / check).
+#
+# Usage:
+#   bin/run check                 # self-test gate
+#   bin/run auth-request --email E # request a sign-in magic link
+#   bin/run auth-verify <url>      # exchange the emailed link for a session
+#   bin/run check                  # peek the queue, emit normalized JSON
+set -euo pipefail
+cd "$(dirname "$0")/.."
+PY="${PY:-python3}"
+
+if [ "${1:-}" = "check" ]; then
+  exec ./bin/check
+fi
+exec python3 watch.py "$@"

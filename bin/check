@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# outlier-toolkit — self-test gate (PASS/FAIL).
+# Primary op is the Outlier queue watcher (watch.py). Gate = the watcher module
+# and hatch_outlier client compile + import cleanly (does NOT hit the network /
+# Outlier auth). Verifies vendored outlier-cli dependency dir is present.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+echo "== outlier-toolkit check: start =="
+PY="${PY:-python3}"
+
+# Gate 1 — syntax + import probe
+set +e
+out="$("$PY" -m py_compile watch.py hatch_outlier/__init__.py hatch_outlier/client.py 2>&1)"
+rc=$?
+set -e
+echo "$out"
+[ "$rc" -eq 0 ] || { echo "FAIL: py_compile rc=$rc"; exit 1; }
+
+# Gate 2 — hatch_outlier imports resolve (lazy; no auth performed)
+set +e
+out="$("$PY" -c 'import hatch_outlier; print("hatch_outlier OK", hatch_outlier.__file__)' 2>&1)"
+rc=$?
+set -e
+echo "$out"
+[ "$rc" -eq 0 ] || { echo "FAIL: hatch_outlier import rc=$rc"; exit 1; }
+
+# Gate 3 — vendored outlier-cli present
+[ -d vendor/outlier-cli ] || { echo "FAIL: vendor/outlier-cli missing"; exit 1; }
+
+echo "== outlier-toolkit check: PASS =="
+exit 0
